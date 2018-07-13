@@ -23,22 +23,22 @@ type WorkMap map[string]WorkFunc
 type Worker struct {
 	// Interval is the amount of time that this Worker should sleep before trying
 	// to find another Job.
+	id       int
 	ctx      context.Context
 	Interval time.Duration
 	c        *Client
 	m        WorkMap
 	mu       sync.Mutex
 	done     bool
-	er       chan struct{}
 }
 
-func NewWorker(ctx context.Context, c *Client, m WorkMap) *Worker {
+func NewWorker(ctx context.Context, id int, c *Client, m WorkMap) *Worker {
 	return &Worker{
+		id:       id,
 		ctx:      ctx,
 		Interval: defaultWakeInterval,
 		c:        c,
 		m:        m,
-		er:       make(chan struct{}),
 	}
 }
 
@@ -49,15 +49,78 @@ func (w *Worker) Work() {
 		// Using select for non-blocking reading from channels.
 		select {
 		case <-w.ctx.Done(): // We don't want to wait until interval reaches to check if main thread has been cancelled and our job just finished
-			log.Println("worker done")
+			log.Printf("[DEBUG] Worker %d done\n", w.id)
 			return
 		case <-time.After(w.Interval):
+			w.c.workerstatus <- WorkerWaitStatus{w.id, true}
+			log.Printf("[DEBUG] Worker %d wait for new job\n", w.id)
 			select {
 			case <-w.ctx.Done():
-				log.Println("worker done")
+				log.Printf("[DEBUG] Worker %d done\n", w.id)
 				return
 			case j := <-w.c.pool:
+				w.c.workerstatus <- WorkerWaitStatus{w.id, false}
 				w.WorkOne(&j)
+			}
+		}
+	}
+}
+
+// Manager is a single "worker" that check for when the job channel is empty
+// This is done by checking the workerstatus channel and look for instances where all workers are
+// waiting for job. This also only works because channel in GO are FIFO so we can get latest workers statuses
+type Manager struct {
+	// Interval is the amount of time that this Worker should sleep before trying
+	// to find another Job.
+	workercount       int
+	workerswaitstatus []bool
+	ctx               context.Context
+	Interval          time.Duration
+	c                 *Client
+	mu                sync.Mutex
+	done              bool
+}
+
+func NewManager(ctx context.Context, workercount int, c *Client) *Manager {
+	return &Manager{
+		workercount:       workercount,
+		ctx:               ctx,
+		workerswaitstatus: make([]bool, workercount),
+		Interval:          defaultWakeInterval,
+		c:                 c,
+	}
+}
+
+// Start starts all of the Workers in the WorkerPool.
+func (m *Manager) Manage() {
+	for {
+		// Using select for non-blocking reading from channels.
+		select {
+		case <-m.ctx.Done(): // We don't want to wait until interval reaches to check if main thread has been cancelled and our job just finished
+			log.Printf("[DEBUG] Manager is done\n")
+			return
+		case <-time.After(m.Interval):
+			select {
+			case <-m.ctx.Done():
+				log.Printf("[DEBUG] Manager is done\n")
+				return
+			case ws := <-m.c.workerstatus:
+				m.workerswaitstatus[ws.Id] = ws.WaitStatus
+				allworkerarewaiting := true
+				for _, waitstatus := range m.workerswaitstatus {
+					if !waitstatus {
+						// if any worker is still working, move on
+						allworkerarewaiting = false
+						break
+					}
+				}
+				if allworkerarewaiting {
+					log.Printf("[DEBUG] All workers are waiting for new job.")
+					m.c.IsQueueEmpty = true
+				} else {
+					m.c.IsQueueEmpty = false
+				}
+
 			}
 		}
 	}
@@ -115,6 +178,7 @@ type WorkerPool struct {
 	WorkMap  WorkMap
 	Interval time.Duration
 	c        *Client
+	manager  *Manager
 	workers  []*Worker
 	mu       sync.Mutex
 	done     bool
@@ -126,15 +190,20 @@ func NewWorkerPool(c *Client, wm WorkMap, count int) *WorkerPool {
 		c:        c,
 		WorkMap:  wm,
 		Interval: defaultWakeInterval,
+		manager:  nil,
 		workers:  make([]*Worker, count),
 	}
 }
 
 // Start starts all of the Workers in the WorkerPool.
 func (w *WorkerPool) Start(ctx context.Context) {
-	for i := range w.workers {
-		w.workers[i] = NewWorker(ctx, w.c, w.WorkMap)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i, _ := range w.workers {
+		w.workers[i] = NewWorker(ctx, i, w.c, w.WorkMap)
 		w.workers[i].Interval = w.Interval
 		go w.workers[i].Work()
 	}
+	w.manager = NewManager(ctx, len(w.workers), w.c)
+	go w.manager.Manage()
 }

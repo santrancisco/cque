@@ -11,15 +11,18 @@ type Job struct {
 	Args interface{}
 }
 
-type Result struct {
-}
-
 // Client is a Que client that can add jobs to the queue and remove jobs from
 // the queue.
 type Client struct {
-	pool   chan Job
-	result chan struct{}
+	IsQueueEmpty bool
+	pool         chan Job
+	workerstatus chan WorkerWaitStatus
 	// TODO: add a way to specify default queueing options
+}
+
+type WorkerWaitStatus struct {
+	Id         int
+	WaitStatus bool
 }
 
 // NewClient create our new local queue
@@ -30,8 +33,9 @@ type Client struct {
 // the job out to workers.
 func NewQue() *Client {
 	return &Client{
-		pool:   make(chan Job, 5000),
-		result: make(chan struct{}, 5000),
+		IsQueueEmpty: true,
+		pool:         make(chan Job, 5000),
+		workerstatus: make(chan WorkerWaitStatus, 100),
 	}
 }
 
