@@ -11,12 +11,20 @@ type Job struct {
 	Args interface{}
 }
 
+// Result is the output of a Job and can be used to send something back to mainthread.
+type Result struct {
+	JobType string
+	// Args can be anything depends on the job
+	Result interface{}
+}
+
 // Client is a Que client that can add jobs to the queue and remove jobs from
 // the queue.
 type Client struct {
 	IsQueueEmpty bool
 	pool         chan Job
 	workerstatus chan WorkerWaitStatus
+	Result       chan Result
 	// TODO: add a way to specify default queueing options
 }
 
@@ -36,6 +44,7 @@ func NewQue() *Client {
 		IsQueueEmpty: true,
 		pool:         make(chan Job, 5000),
 		workerstatus: make(chan WorkerWaitStatus, 100),
+		Result:       make(chan Result, 5000),
 	}
 }
 

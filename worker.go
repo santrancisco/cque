@@ -114,12 +114,14 @@ func (m *Manager) Manage() {
 						break
 					}
 				}
+				m.mu.Lock()
 				if allworkerarewaiting {
 					log.Printf("[DEBUG] All workers are waiting for new job.")
 					m.c.IsQueueEmpty = true
 				} else {
 					m.c.IsQueueEmpty = false
 				}
+				m.mu.Unlock()
 
 			}
 		}
@@ -148,7 +150,7 @@ func (w *Worker) WorkOne(j *Job) {
 }
 
 // By default we have no wait to fetch a new job.
-var defaultWakeInterval = 0 * time.Second
+var defaultWakeInterval = time.Duration(0)
 
 func init() {
 	if v := os.Getenv("QUE_WAKE_INTERVAL"); v != "" {
